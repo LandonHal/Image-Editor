@@ -104,6 +104,16 @@ class Image: # This is a representation of a PNG
 
         filtData = self.__decompress(b''.join([bytes(chunk._data) for chunk in self._chunks if chunk._type == b'IDAT'])) # Concatenated bytes of idat chunk(s) 
         self._scanlines = self.__defilter(filtData)
+
+    def update(self):
+        filtered = self.__filter(self._scanlines)
+        compressed = self.__compress(b''.join([line[1] for line in filtered]))
+        self.__packChunks(compressed)
+        
+        print('Image updated')
+
+    def export(self):
+        pass
         
     @timedFunc('Unpack Chunks')
     def __unpackChunks(self, binArray: bytearray) -> int: # Unpacks given binary to chunks in image, returns bytes read
@@ -134,6 +144,7 @@ class Image: # This is a representation of a PNG
         if Globals.Debug:
             print(f'Decompressed image is {filtSize} bytes, which is {filtSize - self._details['size']} bytes more than the compressed file.')
 
+        # parses decompressed bytes into scanlines
         buffer = []
         i = 0
         for line in range(self._details['dimensions'][1]):
@@ -153,15 +164,12 @@ class Image: # This is a representation of a PNG
         return buffer # Pixels not seperated in return value
     
     @timedFunc("Defilter Data")
-    def __defilter(self, data: list[list[bytearray]]): # TODO: add support for image-wide filters
-        unfilt: list[list[bytearray]] = []
-
-        #for x in range(len(data)):
-            #print(int.from_bytes(data[x][0]))
+    def __defilter(self, data: list[list[bytearray]]) -> list[list[list[bytearray]]]: # TODO: add support for image-wide filters
+        unfilt = [] 
             
         # Filters each scanline
         for i in range(len(data)):
-            buffer = [int.from_bytes(data[i][0])]
+            buffer = [data[i][0]] # filter type byte
             match int.from_bytes(data[i][0]):
                 case 0:
                     buffer.append(data[i][1])
@@ -182,12 +190,10 @@ class Image: # This is a representation of a PNG
         for line in unfilt:
             buffer = []
             i = 0
-            for k in range(int(len(line[1]) / self._details['bpp'])):
+            for k in range(int(len(line[1]) / self._details['bpp'])): 
                 buffer.append(line[1][i + self._details['bpp'] - 1])
                 i += self._details['bpp']
             line[1] = buffer
-
-          print(img._scanlines[140][1][99])
 
         return unfilt
 
@@ -196,82 +202,114 @@ class Image: # This is a representation of a PNG
         pass
 
     @timedFunc("Compress Data")
-    def __compress():
-        pass
+    def __compress(self, bin: bytes):
+        decompData = zlib.compress(bin)
 
     @timedFunc("Filter Data")
-    def __filter(self, data: list[list[bytearray]]):
+    def __filter(self, data: list[list[list[bytearray]]]): # whole lotta lists
         filt: list[list[bytearray]] = []
 
+        
         for i in range(len(data)):
-            buffer = [int.from_bytes(data[i][0])]
-            match int.from_bytes(data[i][0]):
-                case 0:
-                    buffer.append(data[i][1])
-                case 1:
-                    buffer.append(Algorithms.sub(data[i][1])) # filt type is ignored ( first byte )
-                case 2:
-                    buffer.append(Algorithms.up(filt[-1][1], data[i][1]))
-                case 3:
-                    buffer.append(Algorithms.average(filt[-1][1], data[i][1]))
-                case 4:
-                    buffer.append(Algorithms.paeth(filt[-1][1], data[i][1]))
+            buffer = [int.from_bytes(data[i][0])] # filter type byte
+            scanData = bytearray(data[i][1]) # combines pixels
 
+            """match int.from_bytes(data[i][0]): Legacy code
+                case 0:
+                    buffer.append(scanData)
+                case 1:
+                    buffer.append(Algorithms.sub(scanData)) # filt type is ignored ( first byte )
+                case 2:
+                    buffer.append(Algorithms.up(filt[-1][1], scanData))
+                case 3:
+                    buffer.append(Algorithms.average(filt[-1][1], scanData))
+                case 4:
+                    buffer.append(Algorithms.paeth(filt[-1][1], scanData))"""
+
+            filters = {
+                0: scanData,
+                1: lambda: Algorithms.sub(scanData),
+                2: lambda: Algorithms.up(filt[-1][1], scanData),
+                3: lambda: Algorithms.average(filt[-1][1], scanData),
+                4: lambda: Algorithms.paeth(filt[-1][1], scanData)
+            }
+
+            lens = []
+            for k in filters.keys():
+                compressed = zlib.compress(bytes(filters[k]))
+                lens.append((len(compressed)), compressed)
+
+            lens.sort(key = lambda x: x[0])
+            filt.append(lens[0][1])
+
+        if len(filt) is not self._details['dimensions'][1]:
+            raise Exception('Failed to filter all scanlines')
+
+        return filt 
 
 class Algorithms:
 
     def sub(scan: bytearray):
+        temp = scan
         i = 1
-        for byte in scan[1:]: # starting with second byte in pxl data
-            byte -= scan[i - 1]
+        for byte in temp[1:]: # starting with second byte in pxl data
+            byte -= temp[i - 1]
             i += 1
-        return scan
+        return temp
 
     def desub(scan: bytearray):
+        temp = scan
         i = 1
-        for byte in scan[1:]: # starting with second byte in pxl data
-            byte += scan[i - 1]
+        for byte in temp[1:]: # starting with second byte in pxl data
+            byte += temp[i - 1]
             i += 1
-        return scan
+        return temp
 
     def up(prevScan: bytearray, scan: bytearray):
+        temp = scan
         k = 0
-        for byte in scan:
+        for byte in temp:
             byte -= prevScan[k]
-        return scan
+        return temp
 
     def deup(prevScan: bytearray, scan: bytearray):
+        temp = scan
         k = 0
-        for byte in scan:
+        for byte in temp:
             byte += prevScan[k]
-        return scan
+        return temp
 
     def average(prevScan: bytearray, scan: bytearray):
+        temp = scan
         i = 1
         k = 0
-        for byte in scan[1:]: # starting with second byte in pxl data
-            byte -= floor(scan[i - 1] + prevScan[k] / 2)
+        for byte in temp[1:]: # starting with second byte in pxl data
+            byte -= floor(temp[i - 1] + prevScan[k] / 2)
+        return temp
         
     def deaverage(prevScan: bytearray, scan: bytearray):
+        temp = scan
         i = 1
         k = 0
-        for byte in scan[1:]: # starting with second byte in pxl data
-            byte += floor(scan[i - 1] + prevScan[k] / 2)
-        return scan 
+        for byte in temp[1:]: # starting with second byte in pxl data
+            byte += floor(temp[i - 1] + prevScan[k] / 2)
+        return temp 
 
     def paeth(prevScan: bytearray, scan: bytearray):
+        temp = scan
         i = 1
         k = 0
-        for byte in scan: # starting with second byte in pxl data
-            byte -= Algorithms.__paeth(scan[i - 1], prevScan[k], prevScan[k - 1])
-        return scan 
+        for byte in temp: # starting with second byte in pxl data
+            byte -= Algorithms.__paeth(temp[i - 1], prevScan[k], prevScan[k - 1])
+        return temp 
 
     def depaeth(prevScan: bytearray, scan: bytearray):
+        temp = scan
         i = 1
         k = 0
-        for byte in scan: # starting with second byte in pxl data
-            byte += Algorithms.__paeth(scan[i - 1], prevScan[k], prevScan[k - 1])
-        return scan 
+        for byte in temp: # starting with second byte in pxl data
+            byte += Algorithms.__paeth(temp[i - 1], prevScan[k], prevScan[k - 1])
+        return temp 
 
     def __paeth(a, b, c):
         p = a + b - c
@@ -294,3 +332,4 @@ with open("C:\\Users\\halcombl2\\Desktop\\Coding II\\Image Editor\\Dice.png", 'r
     stream = fp.read()
     img = Image(bytearray(stream)[0:8], bytearray(stream)[8:])
     img.details()
+    img.update()
