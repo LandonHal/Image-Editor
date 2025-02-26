@@ -106,14 +106,26 @@ class Image: # This is a representation of a PNG
         self._scanlines = self.__defilter(filtData)
 
     def update(self):
-        filtered = self.__filter(self._scanlines)
-        compressed = self.__compress(b''.join([line[1] for line in filtered]))
+        #filtered = self.__filter(self._scanlines)
+        filtered = b''.join(bytearray(line) for line in sum(self._scanlines, []))
+        compressed = self.__compress(filtered)
         self.__packChunks(compressed)
         
         print('Image updated')
 
-    def export(self):
-        pass
+    def export(self, name: str):
+
+        with open(name, 'wb') as fp:
+            fp.write(self._signature)
+
+            for chunk in self._chunks:
+                print(f"Writing chunk: {chunk._type}, size of data: {len(chunk._data)}")
+                fp.write(chunk._size.to_bytes(4, 'big'))
+                fp.write(chunk._type)
+                fp.write(chunk._data)
+                fp.write(chunk._crc)
+
+            fp.close()
         
     @timedFunc('Unpack Chunks')
     def __unpackChunks(self, binArray: bytearray) -> int: # Unpacks given binary to chunks in image, returns bytes read
@@ -167,7 +179,7 @@ class Image: # This is a representation of a PNG
     def __defilter(self, data: list[list[bytearray]]) -> list[list[list[bytearray]]]: # TODO: add support for image-wide filters
         unfilt = [] 
             
-        # Filters each scanline
+        # Defilters each scanline
         for i in range(len(data)):
             buffer = [data[i][0]] # filter type byte
             match int.from_bytes(data[i][0]):
@@ -198,12 +210,36 @@ class Image: # This is a representation of a PNG
         return unfilt
 
     @timedFunc("Pack Chunks")
-    def __packChunks():
-        pass
+    def __packChunks(self, bytes):
+
+        i = 0
+        for chunk in self._chunks:
+            if chunk._type == b'IDAT':
+                if i == 0:
+                    chunk._data = bytes
+                else:
+                    self._chunks.remove(chunk)
+
+            chunk._size = len(chunk._data)
+
+            i += 1
+
+        chunkIHDR = next(chunk for chunk in self._chunks if chunk._type == b'IHDR')
+
+        chunkIHDR._data[0:4] = self._details['dimensions'][0].to_bytes(4, 'big')
+        chunkIHDR._data[4:8] = self._details['dimensions'][1].to_bytes(4, 'big')
+        chunkIHDR._data[8] = self._details['bit-depth']
+        chunkIHDR._data[9] = self._details['color-type']
+        chunkIHDR._data[10] = self._details['compression-method']
+        chunkIHDR._data[11] = self._details['filter-method']
+        chunkIHDR._data[12] = self._details['interlace-method']
 
     @timedFunc("Compress Data")
     def __compress(self, bin: bytes):
         decompData = zlib.compress(bin)
+        if Globals.Debug:
+            print(f'Compressed image is {len(decompData)} bytes, which is {len(bin) - len(decompData)} bytes less than the decompressed file.')
+            return decompData
 
     @timedFunc("Filter Data")
     def __filter(self, data: list[list[list[bytearray]]]): # whole lotta lists
@@ -211,8 +247,8 @@ class Image: # This is a representation of a PNG
 
         
         for i in range(len(data)):
-            buffer = [int.from_bytes(data[i][0])] # filter type byte
-            scanData = bytearray(data[i][1]) # combines pixels
+            buffer = []
+            scanData = bytearray(data[i][1]) # combines pixels in scanline
 
             """match int.from_bytes(data[i][0]): Legacy code
                 case 0:
@@ -226,26 +262,36 @@ class Image: # This is a representation of a PNG
                 case 4:
                     buffer.append(Algorithms.paeth(filt[-1][1], scanData))"""
 
+            if i == 0:
+                buffer.append(b'\x00')
+                buffer.append(scanData)
+                filt.append(buffer)
+                continue
+
             filters = {
                 0: scanData,
-                1: lambda: Algorithms.sub(scanData),
-                2: lambda: Algorithms.up(filt[-1][1], scanData),
-                3: lambda: Algorithms.average(filt[-1][1], scanData),
-                4: lambda: Algorithms.paeth(filt[-1][1], scanData)
+                1: Algorithms.sub(scanData),
+                2: Algorithms.up(filt[-1][1], scanData),
+                3: Algorithms.average(filt[-1][1], scanData),
+                4: Algorithms.paeth(filt[-1][1], scanData)
             }
 
             lens = []
             for k in filters.keys():
-                compressed = zlib.compress(bytes(filters[k]))
-                lens.append((len(compressed)), compressed)
+                filtered = filters[k]
+                compressed = bytearray(zlib.compress(filtered))
+                lens.append((len(compressed), k))
 
-            lens.sort(key = lambda x: x[0])
-            filt.append(lens[0][1])
+            lens.sort(key = lambda x: x[0]) # sort to find shortest compression data
+            buffer.append(lens[0][1].to_bytes(1, 'big'))
+            #print(f'Filter type: {buffer[-1]}') idk why its all 0
+            buffer.append(bytes(zlib.compress(filters[lens[0][1]])))
+            filt.append(buffer)
+
 
         if len(filt) is not self._details['dimensions'][1]:
             raise Exception('Failed to filter all scanlines')
-
-        return filt 
+        return b''.join(sum(filt, []))
 
 class Algorithms:
 
@@ -331,5 +377,6 @@ with open(os.path.join(os.path.dirname(__file__), "config.json"), "r") as config
 with open("C:\\Users\\halcombl2\\Desktop\\Coding II\\Image Editor\\Dice.png", 'rb') as fp:
     stream = fp.read()
     img = Image(bytearray(stream)[0:8], bytearray(stream)[8:])
-    img.details()
-    img.update()
+img.details()
+img.update()
+img.export("C:\\Users\\halcombl2\\Desktop\\Coding II\\Image Editor\\output.png")
