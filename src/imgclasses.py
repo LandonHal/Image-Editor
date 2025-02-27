@@ -17,7 +17,7 @@ from math import floor
 #|  xx xx xx xx <-- Num of bytes in chunk data (unsigned int)
 #|  xx xx xx xx <-- 4-byte chunk type code (ascii)
 #|  * <-- Chunk data
-#|  xx xx xx xx <-- CRC
+#|  xx xx xx xx <-- CRC (should probably implement this)
 
 #|  -----------     IHDR Image Header Chunk Data   |   13 Bytes 
 #|  xx xx xx xx <-- Width in pixels
@@ -31,9 +31,12 @@ from math import floor
 # All integers larger than one byte are big-endian encoded
 # An additional "filter-type" byte is added to the beginning of every scanline. The filter-type byte is not considered part of the image data, but it is included in the datastream sent to the compression step.
 
+# As it stands, this project does not work as the outputted image is blank. 
+
 class Globals:
     Debug = None
 
+# Time them functions
 def timedFunc(step: str):
     def decorator(func):
         def wrapper(*args, **kwargs):
@@ -55,7 +58,7 @@ class Chunk:
         self._data = bin[8:-4]
         self._crc = bin[-4:]
 
-class Image: # This is a representation of a PNG
+class Image: # This is a representation of a PNG. _chunks is compressed data, _scanlines is decompressed data
     def __init__(self, sig: bytes = None, bin: bytes = None): 
         self._signature = sig
         self._chunks: list[Chunk] = list()
@@ -78,6 +81,7 @@ class Image: # This is a representation of a PNG
             print(f'Image with {k}: {self._details[k]}')
     
     def populate(self, bin: bytes):
+        # populates image data given binary data
         self._details['size'] = self.__unpackChunks(bytearray(bin))
         self._details['dimensions'] = (unpack('>I', self._chunks[0]._data[0:4])[0], unpack('>I', self._chunks[0]._data[4:8])[0]) # Width, length
         self._details['bit-depth'] = self._chunks[0]._data[8]
@@ -106,16 +110,15 @@ class Image: # This is a representation of a PNG
         self._scanlines = self.__defilter(filtData)
 
     def update(self):
-        #filtered = self.__filter(self._scanlines)
-        filtered = b''.join(bytearray(line) for line in sum(self._scanlines, []))
+        filtered = self.__filter(self._scanlines)
         compressed = self.__compress(filtered)
         self.__packChunks(compressed)
         
         print('Image updated')
 
     def export(self, name: str):
-
-        with open(name, 'wb') as fp:
+        # this creates the png file
+        with open(os.path.join(os.path.dirname(__file__)[0:-3], name), 'wb') as fp:
             fp.write(self._signature)
 
             for chunk in self._chunks:
@@ -186,7 +189,7 @@ class Image: # This is a representation of a PNG
                 case 0:
                     buffer.append(data[i][1])
                 case 1:
-                    buffer.append(Algorithms.desub(data[i][1])) # filt type is ignored ( first byte )
+                    buffer.append(Algorithms.desub(data[i][1])) # filtter byte is ignored here, hence the [1]
                 case 2:
                     buffer.append(Algorithms.deup(unfilt[-1][1], data[i][1]))
                 case 3:
@@ -224,6 +227,7 @@ class Image: # This is a representation of a PNG
 
             i += 1
 
+        #update IHDR chunk
         chunkIHDR = next(chunk for chunk in self._chunks if chunk._type == b'IHDR')
 
         chunkIHDR._data[0:4] = self._details['dimensions'][0].to_bytes(4, 'big')
@@ -244,7 +248,6 @@ class Image: # This is a representation of a PNG
     @timedFunc("Filter Data")
     def __filter(self, data: list[list[list[bytearray]]]): # whole lotta lists
         filt: list[list[bytearray]] = []
-
         
         for i in range(len(data)):
             buffer = []
@@ -262,6 +265,7 @@ class Image: # This is a representation of a PNG
                 case 4:
                     buffer.append(Algorithms.paeth(filt[-1][1], scanData))"""
 
+            # Brute force filter selection. This is the official way to do it.
             if i == 0:
                 buffer.append(b'\x00')
                 buffer.append(scanData)
@@ -284,7 +288,6 @@ class Image: # This is a representation of a PNG
 
             lens.sort(key = lambda x: x[0]) # sort to find shortest compression data
             buffer.append(lens[0][1].to_bytes(1, 'big'))
-            #print(f'Filter type: {buffer[-1]}') idk why its all 0
             buffer.append(bytes(zlib.compress(filters[lens[0][1]])))
             filt.append(buffer)
 
@@ -379,4 +382,4 @@ with open("C:\\Users\\halcombl2\\Desktop\\Coding II\\Image Editor\\Dice.png", 'r
     img = Image(bytearray(stream)[0:8], bytearray(stream)[8:])
 img.details()
 img.update()
-img.export("C:\\Users\\halcombl2\\Desktop\\Coding II\\Image Editor\\output.png")
+img.export("gunk.png")
