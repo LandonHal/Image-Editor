@@ -4,6 +4,8 @@ import zlib
 from struct import unpack
 from time import perf_counter
 from math import floor
+import matplotlib.pyplot as plt
+import numpy 
 
 # PNG hex representation ------------------
 #|  -----------     PNG header  |   8 Bytes
@@ -51,6 +53,11 @@ def timedFunc(step: str):
         return wrapper
     return decorator
 
+class Scanline:
+    def __init__(self, filtertype: int, data: bytearray | list[tuple[int]]):
+        self._filter = filtertype
+        self._data = data # This is an array of tuple[int], or a bytearray depending on program progress
+
 class Chunk:
     def __init__(self, bin: bytearray, size):
         self._size = size
@@ -61,6 +68,7 @@ class Chunk:
 class Image: # This is a representation of a PNG. _chunks is compressed data, _scanlines is decompressed data
     def __init__(self, sig: bytes = None, bin: bytes = None): 
         self._signature = sig
+        print(sig)
         self._chunks: list[Chunk] = list()
         self._scanlines: list[list[bytes]] = list()
         self._details = {
@@ -106,7 +114,9 @@ class Image: # This is a representation of a PNG. _chunks is compressed data, _s
         if not (self._details['interlace-method'] == 0):
             raise Exception('Interlacing is not supported')
 
-        filtData = self.__decompress(b''.join([bytes(chunk._data) for chunk in self._chunks if chunk._type == b'IDAT'])) # Concatenated bytes of idat chunk(s) 
+        raw = b''.join([bytes(chunk._data) for chunk in self._chunks if chunk._type == b'IDAT'])
+        print(f'Raw IDAT is {len(raw)} bytes')
+        filtData = self.__decompress(raw) # Concatenated bytes of idat chunk(s) 
         self._scanlines = self.__defilter(filtData)
 
     def update(self):
@@ -140,6 +150,7 @@ class Image: # This is a representation of a PNG. _chunks is compressed data, _s
 
             if Globals.Debug:
                 print(f"Size of last counted chunk: {chunkSize}")
+                print(f'Chunk type: {self._chunks[-1]._type}')
                 print(f"Counted chunks: {self._chunks.__len__()}\n")
 
             if (self._chunks[-1]._type == b'IEND'):
@@ -150,7 +161,7 @@ class Image: # This is a representation of a PNG. _chunks is compressed data, _s
         return i
     
     @timedFunc("Decompress Data")
-    def __decompress(self, bin: bytes):
+    def __decompress(self, bin: bytes) -> list[Scanline]: # Decompresses idat data, and constructs into scanlines 
         filtData = bytearray(zlib.decompress(bin))
 
         filtSize = len(filtData)
@@ -159,56 +170,64 @@ class Image: # This is a representation of a PNG. _chunks is compressed data, _s
         if Globals.Debug:
             print(f'Decompressed image is {filtSize} bytes, which is {filtSize - self._details['size']} bytes more than the compressed file.')
 
-        # parses decompressed bytes into scanlines
+        # Parses decompressed bytes into scanlines
         buffer = []
         i = 0
-        for line in range(self._details['dimensions'][1]):
-            bufferLine = []
-            bufferLine.append(filtData[i : i + 1])
+        for scanline in range(self._details['dimensions'][1]):
+            filtType = filtData[i : i + 1] # filter type byte
             i += 1
-            bufferLine.append(filtData[i : i + self._details['dimensions'][0] * self._details['bpp']])
+            scanData = filtData[i : i + self._details['dimensions'][0] * self._details['bpp']] # scanline data
             i += self._details['dimensions'][0] * self._details['bpp']
             #for pxl in range(self._details['dimensions'][0]): Defunct thanks to filtering
              #   bufferLine.append(filtData[i: i + self._details['bpp']])
               #  i += self._details['bpp']
-            buffer.append(bufferLine)
+            buffer.append(Scanline(int.from_bytes(filtType), scanData)) # At this level, scanline data is a single bytearray
 
-        if len(filtData[i:]):
+        for scanline in buffer:
+            if len(scanline._data) != len(buffer[0]._data):
+                raise Exception('Failed to read all pixels')
+        if len(filtData[i:]): #data remains
             raise Exception('Failed to read all pixels')
         
-        return buffer # Pixels not seperated in return value
+        return buffer # in form list[Scanline]
     
     @timedFunc("Defilter Data")
-    def __defilter(self, data: list[list[bytearray]]) -> list[list[list[bytearray]]]: # TODO: add support for image-wide filters
-        unfilt = [] 
+    def __defilter(self, data: list[Scanline]) -> list[Scanline]: # TODO: add support for image-wide filters
+        unfilt = data
             
-        # Defilters each scanline
-        for i in range(len(data)):
-            buffer = [data[i][0]] # filter type byte
-            match int.from_bytes(data[i][0]):
+        for i, scanline in enumerate(data):
+            print(i+1, scanline._filter)
+            match (scanline._filter):
                 case 0:
-                    buffer.append(data[i][1])
+                    unfilt[i]._data = (scanline._data)
                 case 1:
-                    buffer.append(Algorithms.desub(data[i][1])) # filtter byte is ignored here, hence the [1]
+                    unfilt[i]._data = (Algorithms.desub(scanline._data))
                 case 2:
-                    buffer.append(Algorithms.deup(unfilt[-1][1], data[i][1]))
+                    unfilt[i]._data = (Algorithms.deup(unfilt[-1]._data, scanline._data)) 
                 case 3:
-                    buffer.append(Algorithms.deaverage(unfilt[-1][1], data[i][1]))
+                    unfilt[i]._data = (Algorithms.deaverage(unfilt[-1]._data, scanline._data))
                 case 4:
-                    buffer.append(Algorithms.depaeth(unfilt[-1][1], data[i][1]))
+                    unfilt[i]._data = (Algorithms.depaeth(unfilt[-1]._data, scanline._data))
 
-            unfilt.append(buffer)
+        debugimg = [scanline._data for scanline in unfilt]
+
+        plt.imshow(numpy.array(debugimg).reshape((self._details['dimensions'][1], self._details['dimensions'][0], 4)))
+        plt.show()
+        plt.imshow
 
         # Seperates each scanline into pixels 
-        bD = int(self._details['bit-depth'] / 8)
-
-        for line in unfilt:
+        for l, line in enumerate(unfilt):
             buffer = []
             i = 0
-            for k in range(int(len(line[1]) / self._details['bpp'])): 
-                buffer.append(line[1][i + self._details['bpp'] - 1])
+
+            for k in range(int(len(line._data) / self._details['bpp'])): # for each pixel
+                px = line._data[i : i + self._details['bpp']]
+                buffer.append(tuple(px))
                 i += self._details['bpp']
-            line[1] = buffer
+
+            unfilt[l]._data = buffer
+
+
 
         return unfilt
 
@@ -298,67 +317,33 @@ class Image: # This is a representation of a PNG. _chunks is compressed data, _s
 
 class Algorithms:
 
-    def sub(scan: bytearray):
-        temp = scan
-        i = 1
-        for byte in temp[1:]: # starting with second byte in pxl data
-            byte -= temp[i - 1]
-            i += 1
-        return temp
-
     def desub(scan: bytearray):
         temp = scan
-        i = 1
-        for byte in temp[1:]: # starting with second byte in pxl data
-            byte += temp[i - 1]
-            i += 1
-        return temp
-
-    def up(prevScan: bytearray, scan: bytearray):
-        temp = scan
-        k = 0
-        for byte in temp:
-            byte -= prevScan[k]
+        for i, byte in enumerate(scan):
+            out = byte + temp[i - 1]
+            temp[i] = out & 0xff
         return temp
 
     def deup(prevScan: bytearray, scan: bytearray):
         temp = scan
-        k = 0
-        for byte in temp:
-            byte += prevScan[k]
+        for i, byte in enumerate(scan):
+            out = byte + prevScan[i]
+            temp[i] = 0 #out & 0xff
         return temp
 
-    def average(prevScan: bytearray, scan: bytearray):
-        temp = scan
-        i = 1
-        k = 0
-        for byte in temp[1:]: # starting with second byte in pxl data
-            byte -= floor(temp[i - 1] + prevScan[k] / 2)
-        return temp
-        
     def deaverage(prevScan: bytearray, scan: bytearray):
         temp = scan
-        i = 1
-        k = 0
-        for byte in temp[1:]: # starting with second byte in pxl data
-            byte += floor(temp[i - 1] + prevScan[k] / 2)
-        return temp 
-
-    def paeth(prevScan: bytearray, scan: bytearray):
-        temp = scan
-        i = 1
-        k = 0
-        for byte in temp: # starting with second byte in pxl data
-            byte -= Algorithms.__paeth(temp[i - 1], prevScan[k], prevScan[k - 1])
-        return temp 
+        for i, byte in enumerate(scan):
+            out = byte + floor(temp[i - 1] + prevScan[i] / 2)
+            temp[i] = 0 #out & 0xff
+        return temp
 
     def depaeth(prevScan: bytearray, scan: bytearray):
         temp = scan
-        i = 1
-        k = 0
-        for byte in temp: # starting with second byte in pxl data
-            byte += Algorithms.__paeth(temp[i - 1], prevScan[k], prevScan[k - 1])
-        return temp 
+        for i, byte in enumerate(scan):
+            out = byte + Algorithms.__paeth(temp[i - 1], prevScan[i], prevScan[i - 1])
+            temp[i] = 0 #out & 0xff
+        return temp
 
     def __paeth(a, b, c):
         p = a + b - c
@@ -381,5 +366,5 @@ with open("C:\\Users\\halcombl2\\Desktop\\Coding II\\Image Editor\\Dice.png", 'r
     stream = fp.read()
     img = Image(bytearray(stream)[0:8], bytearray(stream)[8:])
 img.details()
-img.update()
-img.export("gunk.png")
+#img.update()
+#img.export("gunk.png")
