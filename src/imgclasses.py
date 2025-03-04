@@ -320,7 +320,7 @@ class Algorithms:
     def desub(scan: bytearray):
         temp = scan
         for i, byte in enumerate(scan):
-            out = byte + temp[i - 1]
+            out = byte + temp[i - 1] #if temp[i - 1] exists else 0 <---pseudocode for later
             temp[i] = out & 0xff
         return temp
 
